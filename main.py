@@ -1,3 +1,5 @@
+import os
+import hmac
 from flask import Flask, jsonify, request
 import psutil
 import cpuinfo
@@ -5,55 +7,71 @@ from uptime import uptime
 
 app = Flask(__name__)
 
-SECRET_KEY = "uuguigi"
-PORT = 80
+# --- CONFIGURATION ---
+# SECRET: Loaded from environment variable, with your preferred default fallback
+SECRET_KEY = os.environ.get("API_SECRET_KEY", "uuguigi")
+PORT = int(os.environ.get("PORT", 80))
 
+# CONSTANT: Define GiB conversion for cleaner math
+GB = 1024 ** 3 
+
+# --- CACHE ---
+# Gather static hardware info on startup so it doesn't bottleneck requests
+print("Gathering static CPU info (this takes a moment)...")
+_cpu_data = cpuinfo.get_cpu_info()
+CPU_MODEL = _cpu_data.get("brand_raw", "Unknown CPU")
+CPU_THREADS = _cpu_data.get("count", psutil.cpu_count(logical=True))
+
+
+# --- ROUTES ---
 @app.route('/ping', methods=['GET'])
 def ping():
     return jsonify({"message": "ALIVE"})
 
 @app.route('/stats', methods=['GET'])
 def stats():
-    # Check for secret key in query parameters
-    secret = request.args.get('key')
-    if secret != SECRET_KEY:
+    # SECURITY: Using URL parameters as requested
+    provided_key = request.args.get('key')
+    
+    # Use hmac.compare_digest to prevent timing attacks when checking the password
+    if not provided_key or not hmac.compare_digest(provided_key, SECRET_KEY):
         return jsonify({"error": "Unauthorized"}), 401
 
-    # Gather system statistics
+    # Gather LIVE system statistics
     up = uptime()
-    cpu = cpuinfo.get_cpu_info()["brand_raw"]  # Get CPU model
-    threads = cpuinfo.get_cpu_info()["count"]  # Get number of threads
-    cpu_usage = psutil.cpu_percent(interval=1)
-    ram_usage = round(psutil.virtual_memory().used / 1_000_000_000, 2)
-    total_ram = round(psutil.virtual_memory().total / 1_000_000_000, 2)
-    swap_usage = round(psutil.swap_memory().used / 1_000_000_000, 2)
-    total_swap = round(psutil.swap_memory().total / 1_000_000_000, 2)
-    disk_usage = round(psutil.disk_usage('/').used / 1_000_000_000, 2)
-    total_disk = round(psutil.disk_usage('/').total / 1_000_000_000, 2)
+    
+    # PERFORMANCE: Lowered interval to 0.1s so the API doesn't freeze for a full second
+    cpu_usage = psutil.cpu_percent(interval=0.1) 
+    
+    v_mem = psutil.virtual_memory()
+    s_mem = psutil.swap_memory()
+    disk = psutil.disk_usage('/')
 
     # Prepare response
     response = {
         "cpu": {
-            "model": cpu,
-            "threads": threads,
-            "usage": cpu_usage
+            "model": CPU_MODEL,       # Cached
+            "threads": CPU_THREADS,   # Cached
+            "usage": cpu_usage        # Live
         },
         "ram": {
-            "used": ram_usage,
-            "total": total_ram
+            "used": round(v_mem.used / GB, 2),
+            "total": round(v_mem.total / GB, 2)
         },
         "swap": {
-            "used": swap_usage,
-            "total": total_swap
+            "used": round(s_mem.used / GB, 2),
+            "total": round(s_mem.total / GB, 2)
         },
         "disk": {
-            "used": disk_usage,
-            "total": total_disk
+            "used": round(disk.used / GB, 2),
+            "total": round(disk.total / GB, 2)
         },
         "uptime": up
     }
 
     return jsonify(response)
 
+
 if __name__ == '__main__':
-    app.run(port=PORT)
+    # Running on 0.0.0.0 allows it to be accessed from other machines on your network
+    app.run(host='0.0.0.0', port=PORT)
