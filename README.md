@@ -1,4 +1,4 @@
-# WebWiz Node Health
+# Node Health
 
 ## Features
 - Provides system statistics including CPU, RAM, swap, and disk usage.
